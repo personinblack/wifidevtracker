@@ -1,12 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"time"
 )
@@ -28,23 +29,26 @@ var RUNNING = true
 
 var API_KEY = os.Getenv("API_KEY")
 var URL = OrElse(os.Getenv("URL"), "http://localhost:2501")
-var FIELD_SIMP, _ = json.Marshal(map[string][][]string{"fields": {
-	{"kismet.device.base.last_time", "last_seen"},
-}})
 
 type DeviceRecord struct {
-	LastSeen int `json:"last_seen,omitempty"`
+	LastTime  int    `json:"kismet.device.base.last_time,omitempty"`
+	FirstTime int    `json:"kismet.device.base.first_time,omitempty"`
+	MacAddr   string `json:"kismet.device.base.macAddr,omitempty"`
+	LastBssid string `json:"dot11.device.last_bssid,omitempty"`
+	Tags      struct {
+		Notes string `json:"notes,omitempty"`
+	} `json:"kismet.device.base.tags,omitempty"`
+	Channel string `json:"kismet.device.base.channel,omitempty"`
 }
 
 func FetchDevRec(macAddr string) (DeviceRecord, error) {
-	resp, postErr := http.Post(
+	resp, postErr := http.Get(
 		fmt.Sprintf(
 			"%s/devices/by-mac/%s/devices.json?KISMET=%s",
 			URL,
 			macAddr,
 			API_KEY,
-		), "application/json",
-		bytes.NewBuffer(FIELD_SIMP),
+		),
 	)
 
 	if postErr != nil {
@@ -65,9 +69,9 @@ func FetchDevRec(macAddr string) (DeviceRecord, error) {
 	return devRecords[0], nil
 }
 
-type callback func(prevDevRec, curDevRec DeviceRecord, err error) (c0ntinue bool)
+type TrackCallback func(prevDevRec, curDevRec DeviceRecord, err error) (c0ntinue bool)
 
-func TrackDev(macAddr string, cb callback) {
+func TrackDev(macAddr string, interval int, cb TrackCallback) {
 	var prevDevRec DeviceRecord
 	for {
 		curDevRec, err := FetchDevRec(macAddr)
@@ -77,37 +81,112 @@ func TrackDev(macAddr string, cb callback) {
 		}
 
 		prevDevRec = curDevRec
-		time.Sleep(time.Second)
+		time.Sleep(time.Duration(interval) * time.Millisecond)
 	}
 }
 
+type Config struct {
+	Interval int `json:"interval,omitempty"`
+	Devices  []struct {
+		Bssid    string `json:"bssid,omitempty"`
+		Tracking bool   `json:"tracking,omitempty"`
+	} `json:"devices"`
+}
+
+func ConfigDir() string {
+	dir, err := os.UserConfigDir()
+
+	if err != nil {
+		panic(err)
+	}
+
+	dir = filepath.Join(dir, "wifidevtracker")
+
+	err = os.Mkdir(dir, os.ModePerm)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			stat, errStat := os.Stat(dir)
+			if errStat != nil {
+				panic(errStat)
+			} else if !stat.IsDir() {
+				panic(err)
+			}
+		} else {
+			panic(err)
+		}
+	}
+	fmt.Println(dir)
+
+	return dir
+}
+
+func ReadConfig() (Config, error) {
+	conFile := filepath.Join(ConfigDir(), "config.json")
+	rFile, err := os.ReadFile(conFile)
+	if err != nil {
+		return Config{}, err
+	}
+
+	var config Config
+	err = json.Unmarshal(rFile, &config)
+
+	if err != nil {
+		return config, err
+	}
+
+	return config, nil
+}
+
 func main() {
-	if API_KEY == "" {
+	if IsZero(API_KEY) {
 		panic("You need to provide the API_KEY env variable!")
 	}
 
-	go TrackDev(
-		"A4:50:46:3B:4F:4D",
-		func(prevDevRec, curDevRec DeviceRecord, err error) bool {
-			if err != nil {
-				log.Println(err)
-				RUNNING = false
-				return false
-			}
+	clog := log.New(os.Stdout, "", log.Ltime|log.Ldate|log.Lshortfile|log.Lmsgprefix)
 
-			if IsZero(prevDevRec) {
-				timeDiff := curDevRec.LastSeen - prevDevRec.LastSeen
-				if timeDiff > 0 {
-					fmt.Printf("LastSeen: %v\n", curDevRec.LastSeen)
-					fmt.Printf("TimeDiff in secs: %v\n", timeDiff)
+	config, cErr := ReadConfig()
+
+	if cErr != nil {
+		panic(cErr)
+	}
+
+	for _, dev := range config.Devices {
+		if !dev.Tracking {
+			continue
+		}
+
+		go TrackDev(
+			dev.Bssid,
+			config.Interval,
+			func(prevDevRec, curDevRec DeviceRecord, err error) bool {
+				if err != nil {
+					clog.Println(err)
+					return true
 				}
-			} else {
-				fmt.Printf("LastSeen: %v\n", curDevRec.LastSeen)
-			}
-			return true
-		},
-	)
+
+				prettyRec, _ := json.MarshalIndent(curDevRec, "", "\t")
+				if !IsZero(prevDevRec) {
+					timeDiff := curDevRec.LastTime - prevDevRec.LastTime
+					if timeDiff > 0 {
+						fmt.Println()
+						clog.Printf("DevRecord: %v", string(prettyRec))
+						clog.Printf("TimeDiff in secs: %v\n", timeDiff)
+					} else {
+						fmt.Print(".")
+					}
+				} else {
+					fmt.Println()
+					clog.Printf("DevRecord: %v", string(prettyRec))
+				}
+				return true
+			},
+		)
+	}
 
 	for RUNNING {
+		time.Sleep(time.Second)
 	}
+
+	fmt.Println()
+	clog.Println("Goodbye!")
 }
