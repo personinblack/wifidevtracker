@@ -85,12 +85,14 @@ func TrackDev(macAddr string, interval int, cb TrackCallback) {
 	}
 }
 
+type ConfDevice struct {
+	Bssid    string `json:"bssid,omitempty"`
+	Tracking bool   `json:"tracking,omitempty"`
+}
+
 type Config struct {
-	Interval int `json:"interval,omitempty"`
-	Devices  []struct {
-		Bssid    string `json:"bssid,omitempty"`
-		Tracking bool   `json:"tracking,omitempty"`
-	} `json:"devices"`
+	Interval int          `json:"interval,omitempty"`
+	Devices  []ConfDevice `json:"devices"`
 }
 
 func ConfigDir() string {
@@ -137,6 +139,34 @@ func ReadConfig() (Config, error) {
 	return config, nil
 }
 
+func WriteDefConfig() {
+	conFile := filepath.Join(ConfigDir(), "config.json")
+
+	if _, err := os.Stat(conFile); err == nil {
+		return
+	}
+
+	config, err := json.MarshalIndent(Config{
+		Interval: 1000,
+		Devices: []ConfDevice{
+			{
+				Bssid:    "A4:50:46:3B:4F:4D",
+				Tracking: true,
+			},
+		},
+	}, "", "\t")
+
+	if err != nil {
+		panic(err)
+	}
+
+	err = os.WriteFile(conFile, config, 0644)
+
+	if err != nil {
+		panic(err)
+	}
+}
+
 func main() {
 	if IsZero(API_KEY) {
 		panic("You need to provide the API_KEY env variable!")
@@ -144,6 +174,7 @@ func main() {
 
 	clog := log.New(os.Stdout, "", log.Ltime|log.Ldate|log.Lshortfile|log.Lmsgprefix)
 
+	WriteDefConfig()
 	config, cErr := ReadConfig()
 
 	if cErr != nil {
