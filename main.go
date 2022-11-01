@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -86,12 +87,14 @@ func TrackDev(macAddr string, interval int, cb TrackCallback) {
 }
 
 type ConfDevice struct {
-	Bssid    string `json:"bssid,omitempty"`
-	Tracking bool   `json:"tracking,omitempty"`
+	Bssid     string `json:"bssid,omitempty"`
+	Tracking  bool   `json:"tracking,omitempty"`
+	GoneFor   int    `json:"gone_for,omitempty"`   // In seconds. 0 means disabled.
+	BackAfter int    `json:"back_after,omitempty"` // ^^
 }
 
 type Config struct {
-	Interval int          `json:"interval,omitempty"`
+	Interval int          `json:"interval,omitempty"` // In milliseconds.
 	Devices  []ConfDevice `json:"devices"`
 }
 
@@ -117,7 +120,6 @@ func ConfigDir() string {
 			panic(err)
 		}
 	}
-	fmt.Println(dir)
 
 	return dir
 }
@@ -150,8 +152,10 @@ func WriteDefConfig() {
 		Interval: 1000,
 		Devices: []ConfDevice{
 			{
-				Bssid:    "A4:50:46:3B:4F:4D",
-				Tracking: true,
+				Bssid:     "A4:50:46:3B:4F:4D",
+				Tracking:  true,
+				GoneFor:   0,
+				BackAfter: 0,
 			},
 		},
 	}, "", "\t")
@@ -191,7 +195,9 @@ func main() {
 			config.Interval,
 			func(prevDevRec, curDevRec DeviceRecord, err error) bool {
 				if err != nil {
-					clog.Println(err)
+					if !strings.Contains(err.Error(), "No record found.") {
+						clog.Println(err)
+					}
 					return true
 				}
 
@@ -199,6 +205,14 @@ func main() {
 				if !IsZero(prevDevRec) {
 					timeDiff := curDevRec.LastTime - prevDevRec.LastTime
 					if timeDiff > 0 {
+						if dev.GoneFor > 0 {
+							x := timeDiff - dev.GoneFor
+
+							if x >= 0 && x <= 2 {
+								// TODO: Send Notification
+							}
+						}
+
 						fmt.Println()
 						clog.Printf("DevRecord: %v", string(prettyRec))
 						clog.Printf("TimeDiff in secs: %v\n", timeDiff)
