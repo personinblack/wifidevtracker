@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/gen2brain/beeep"
 )
 
 func IsZero(val interface{}) bool {
@@ -32,8 +34,8 @@ var API_KEY = os.Getenv("API_KEY")
 var URL = OrElse(os.Getenv("URL"), "http://localhost:2501")
 
 type DeviceRecord struct {
-	LastTime  int    `json:"kismet.device.base.last_time,omitempty"`
-	FirstTime int    `json:"kismet.device.base.first_time,omitempty"`
+	LastTime  int64  `json:"kismet.device.base.last_time,omitempty"`
+	FirstTime int64  `json:"kismet.device.base.first_time,omitempty"`
 	MacAddr   string `json:"kismet.device.base.macAddr,omitempty"`
 	LastBssid string `json:"dot11.device.last_bssid,omitempty"`
 	Tags      struct {
@@ -89,8 +91,8 @@ func TrackDev(macAddr string, interval int, cb TrackCallback) {
 type ConfDevice struct {
 	Bssid     string `json:"bssid,omitempty"`
 	Tracking  bool   `json:"tracking,omitempty"`
-	GoneFor   int    `json:"gone_for,omitempty"`   // In seconds. 0 means disabled.
-	BackAfter int    `json:"back_after,omitempty"` // ^^
+	GoneFor   int64  `json:"gone_for,omitempty"`   // In seconds. 0 means disabled.
+	BackAfter int64  `json:"back_after,omitempty"` // ^^
 }
 
 type Config struct {
@@ -154,8 +156,8 @@ func WriteDefConfig() {
 			{
 				Bssid:     "A4:50:46:3B:4F:4D",
 				Tracking:  true,
-				GoneFor:   0,
-				BackAfter: 0,
+				GoneFor:   10,
+				BackAfter: 10,
 			},
 		},
 	}, "", "\t")
@@ -201,28 +203,50 @@ func main() {
 					return true
 				}
 
-				prettyRec, _ := json.MarshalIndent(curDevRec, "", "\t")
-				if !IsZero(prevDevRec) {
-					timeDiff := curDevRec.LastTime - prevDevRec.LastTime
-					if timeDiff > 0 {
-						if dev.GoneFor > 0 {
-							x := timeDiff - dev.GoneFor
+				notify := func(message string) {
+					clog.Printf(message)
+					beeep.Notify(
+						"WIFIDEVTRACKER",
+						message, "",
+					)
+				}
 
-							if x >= 0 && x <= 2 {
-								// TODO: Send Notification
-							}
+				prettyRec, _ := json.MarshalIndent(curDevRec, "", "\t")
+				devIdent := curDevRec.Tags.Notes
+				goneTime := time.Now().Unix() - curDevRec.LastTime
+
+				if dev.GoneFor > 0 && (goneTime == dev.GoneFor || (goneTime > dev.GoneFor && IsZero(prevDevRec))) {
+					notify(fmt.Sprintf(
+						"The device %v is gone for %v SECONDS!",
+						devIdent, goneTime,
+					))
+				}
+
+				if IsZero(prevDevRec) {
+					fmt.Println()
+					clog.Printf("\nInitialized: %v", string(prettyRec))
+					return true
+				}
+
+				lastTimeDiff := curDevRec.LastTime - prevDevRec.LastTime
+
+				// This means device got updated:
+				if lastTimeDiff > 0 {
+					if dev.BackAfter > 0 && lastTimeDiff-dev.BackAfter >= 0 {
+						if len(devIdent) == 0 {
+							devIdent = dev.Bssid
 						}
 
-						fmt.Println()
-						clog.Printf("DevRecord: %v", string(prettyRec))
-						clog.Printf("TimeDiff in secs: %v\n", timeDiff)
-					} else {
-						fmt.Print(".")
+						notify(fmt.Sprintf(
+							"The device %v is back after %v SECONDS!",
+							devIdent, lastTimeDiff,
+						))
 					}
-				} else {
+
 					fmt.Println()
-					clog.Printf("DevRecord: %v", string(prettyRec))
+					clog.Printf("\nUpdated: %v", string(prettyRec))
 				}
+
 				return true
 			},
 		)
